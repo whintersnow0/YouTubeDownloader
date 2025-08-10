@@ -43,7 +43,6 @@ public class DownloadService : IDownloadService
                 Bitrate = s.Bitrate.BitsPerSecond
             }).ToList();
 
-
         return new VideoInfo
         {
             Id = video.Id,
@@ -65,17 +64,36 @@ public class DownloadService : IDownloadService
         var streamManifest = await _youtube.Videos.Streams.GetManifestAsync(url);
 
         IStreamInfo streamInfo;
+
         if (options.AudioOnly)
         {
-            streamInfo = streamManifest.GetAudioOnlyStreams()
-                .Where(s => s.Container.Name.Equals(options.AudioFormat, StringComparison.OrdinalIgnoreCase))
-                .GetWithHighestBitrate();
+            var audioStreams = streamManifest.GetAudioOnlyStreams();
+
+            if (!string.IsNullOrEmpty(options.AudioFormat))
+            {
+                streamInfo = audioStreams
+                    .Where(s => s.Container.Name.Equals(options.AudioFormat, StringComparison.OrdinalIgnoreCase))
+                    .GetWithHighestBitrate();
+            }
+            else
+            {
+                streamInfo = audioStreams.GetWithHighestBitrate();
+            }
         }
         else
         {
-            streamInfo = streamManifest.GetMuxedStreams()
-                .Where(s => s.VideoQuality.Label == options.Quality)
-                .FirstOrDefault() ?? streamManifest.GetMuxedStreams().GetWithHighestVideoQuality();
+            var videoStreams = streamManifest.GetVideoOnlyStreams();
+
+            if (!string.IsNullOrEmpty(options.Quality))
+            {
+                streamInfo = videoStreams
+                    .Where(s => s.VideoQuality.Label == options.Quality)
+                    .FirstOrDefault() ?? videoStreams.GetWithHighestVideoQuality();
+            }
+            else
+            {
+                streamInfo = videoStreams.GetWithHighestVideoQuality();
+            }
         }
 
         if (streamInfo == null)
@@ -88,6 +106,53 @@ public class DownloadService : IDownloadService
         await DownloadStreamAsync(streamInfo, filePath, progress);
     }
 
+    public async Task DownloadVideoWithAudioAsync(string url, string outputPath, DownloadOptions options, IProgress<DownloadProgress> progress)
+    {
+        var video = await _youtube.Videos.GetAsync(url);
+        var streamManifest = await _youtube.Videos.Streams.GetManifestAsync(url);
+
+        var videoStream = streamManifest.GetVideoOnlyStreams()
+            .Where(s => string.IsNullOrEmpty(options.Quality) || s.VideoQuality.Label == options.Quality)
+            .GetWithHighestVideoQuality();
+
+        var audioStream = streamManifest.GetAudioOnlyStreams()
+            .GetWithHighestBitrate();
+
+        if (videoStream == null || audioStream == null)
+            throw new InvalidOperationException("Required video or audio stream not found.");
+
+        var videoFileName = SanitizeFileName($"{video.Title}_video.{videoStream.Container.Name}");
+        var audioFileName = SanitizeFileName($"{video.Title}_audio.{audioStream.Container.Name}");
+        var finalFileName = SanitizeFileName($"{video.Title}.mp4");
+
+        var videoPath = Path.Combine(outputPath, videoFileName);
+        var audioPath = Path.Combine(outputPath, audioFileName);
+        var finalPath = Path.Combine(outputPath, finalFileName);
+
+        Directory.CreateDirectory(outputPath);
+
+        progress?.Report(new DownloadProgress
+        {
+            Status = "Downloading video...",
+            CurrentFile = videoFileName
+        });
+        await DownloadStreamAsync(videoStream, videoPath, progress);
+
+        progress?.Report(new DownloadProgress
+        {
+            Status = "Downloading audio...",
+            CurrentFile = audioFileName
+        });
+        await DownloadStreamAsync(audioStream, audioPath, progress);
+
+        progress?.Report(new DownloadProgress
+        {
+            Status = "Merging video and audio...",
+            CurrentFile = finalFileName
+        });
+
+    }
+
     public async Task DownloadAudioAsync(string url, string outputPath, AudioFormat format, IProgress<DownloadProgress> progress)
     {
         var video = await _youtube.Videos.GetAsync(url);
@@ -95,6 +160,9 @@ public class DownloadService : IDownloadService
 
         var audioStreamInfo = streamManifest.GetAudioOnlyStreams()
             .GetWithHighestBitrate();
+
+        if (audioStreamInfo == null)
+            throw new InvalidOperationException("No audio stream found.");
 
         var fileName = SanitizeFileName($"{video.Title}.{format.ToString().ToLower()}");
         var filePath = Path.Combine(outputPath, fileName);
