@@ -105,7 +105,7 @@ YouTubeDownloader/
 
 ## Requirements
 
-- .NET 6.0 or higher
+- .NET 8.0 or higher
 
 ## License
 
